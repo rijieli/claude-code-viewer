@@ -12,7 +12,6 @@ from __future__ import annotations
 import io
 import json
 import shutil
-import sys
 import tempfile
 import zipfile
 from html import escape
@@ -22,12 +21,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 import uvicorn
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE / "claude_history_html_export"))
-
-import claude_history_html_export as core  # noqa: E402
-import web_render  # noqa: E402
+import core
+import web_render
 
 CLAUDE_DIR = Path.home() / ".claude"
 

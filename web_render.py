@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from html import escape
 from typing import Any
 
-import claude_history_html_export as core
+import core
 
 
 HIDDEN_META_TYPES = {
