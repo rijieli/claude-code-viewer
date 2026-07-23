@@ -171,10 +171,38 @@ def _render_message_body(event: dict[str, Any], reg: PayloadRegistry) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _is_tool_response(event: dict[str, Any]) -> bool:
+    if event.get("type") != "user":
+        return False
+    content = event.get("message", {}).get("content")
+    if not isinstance(content, list):
+        return False
+    saw_result = False
+    for block in content:
+        if not isinstance(block, dict):
+            return False
+        btype = block.get("type")
+        if btype == "tool_result":
+            saw_result = True
+            continue
+        if btype == "text":
+            if str(block.get("text", "")).strip():
+                return False
+            continue
+        return False
+    return saw_result
+
+
 def _render_turn(event: dict[str, Any], line_no: int, reg: PayloadRegistry) -> str:
     etype = event.get("type", "")
     ts = _fmt_time(str(event.get("timestamp", "")))
     if etype == "user":
+        if _is_tool_response(event):
+            body = _render_message_body(event, reg)
+            if not body.strip():
+                return ""
+            return (f'<article class="turn meta tool-response" id="line-{line_no}">'
+                    f'<div class="body">{body}</div></article>')
         body = _render_message_body(event, reg)
         origin = ""
         if isinstance(event.get("origin"), dict) and event["origin"].get("kind"):
@@ -238,6 +266,7 @@ def render_page(
     reg = PayloadRegistry()
     turns: list[str] = []
     hidden_meta = 0
+    filtered: list[tuple[int, dict[str, Any]]] = []
     for line_no, event in core.read_jsonl(info.jsonl_path):
         etype = str(event.get("type", ""))
         if etype in HIDDEN_META_TYPES:
@@ -245,9 +274,36 @@ def render_page(
             continue
         if etype in {"user", "assistant"} and not core.has_visible_message_content(event):
             continue
+        filtered.append((line_no, event))
+
+    i = 0
+    while i < len(filtered):
+        line_no, event = filtered[i]
+        if event.get("type") == "assistant":
+            group = [(line_no, event)]
+            j = i + 1
+            while j < len(filtered):
+                ln2, e2 = filtered[j]
+                t2 = e2.get("type")
+                if t2 == "assistant" or (t2 == "user" and _is_tool_response(e2)):
+                    group.append((ln2, e2))
+                    j += 1
+                else:
+                    break
+            body_parts = [_render_message_body(ev, reg) for _, ev in group]
+            body = "\n".join(p for p in body_parts if p.strip())
+            ts = _fmt_time(str(group[0][1].get("timestamp", "")))
+            turns.append(
+                f'<article class="turn assistant" id="line-{group[0][0]}">'
+                f'<div class="role">Claude<span class="stamp">{escape(ts)}</span></div>'
+                f'<div class="body">{body}</div></article>'
+            )
+            i = j
+            continue
         rendered = _render_turn(event, line_no, reg)
         if rendered:
             turns.append(rendered)
+        i += 1
 
     hidden_note = (f'<p class="muted small hidden-note">{hidden_meta} metadata events hidden.</p>'
                    if hidden_meta else "")
@@ -310,6 +366,7 @@ body {{ margin:0; background:var(--bg); color:var(--text);
   border:1px solid var(--border); background:var(--panel); max-width:820px; }}
 .turn.user {{ background:var(--user-bg); border-color:var(--user-border); }}
 .turn.meta {{ background:transparent; border-style:dashed; }}
+.turn.tool-response {{ border:none; padding:0 0 0 16px; margin:-8px 0 14px; }}
 .turn .role {{ font-size:11px; font-weight:600; letter-spacing:.05em;
   text-transform:uppercase; color:var(--muted); margin-bottom:6px;
   display:flex; gap:8px; align-items:baseline; }}
