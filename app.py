@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "fastapi",
-#   "uvicorn",
-# ]
-# ///
 """Minimalist web viewer for Claude Code session history.
 
 Run:
+    uv sync
     uv run app.py
 
 Then open http://127.0.0.1:8765
@@ -69,14 +62,22 @@ def session_matches(item: core.SessionInfo, needle: str) -> bool:
     return False
 
 
+PAGE_SIZE = 20
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(q: str = "") -> str:
+def index(q: str = "", page: int = 1) -> str:
     sessions = load_sessions()
     needle = q.strip().lower()
     if needle:
         sessions = [s for s in sessions if session_matches(s, needle)]
+    total = len(sessions)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * PAGE_SIZE
+    visible = sessions[start:start + PAGE_SIZE]
     rows = []
-    for item in sessions:
+    for item in visible:
         project = escape(item.cwd or item.project_label)
         title = escape(item.title)
         prompt = escape(item.first_prompt or "")
@@ -99,7 +100,31 @@ def index(q: str = "") -> str:
         </tr>
         """)
     q_val = escape(q)
-    count_note = f"{len(sessions)} match" + ("es" if len(sessions) != 1 else "") if needle else f"{len(sessions)} sessions"
+    noun = "match" + ("es" if total != 1 else "") if needle else "session" + ("s" if total != 1 else "")
+    range_note = f"{start + 1}–{start + len(visible)} of {total} {noun}" if total else f"0 {noun}"
+
+    def page_link(p: int, label: str, disabled: bool = False, current: bool = False) -> str:
+        qs = f"?page={p}" + (f"&q={q_val}" if q else "")
+        cls = "page-btn" + (" current" if current else "") + (" disabled" if disabled else "")
+        if disabled:
+            return f'<span class="{cls}">{label}</span>'
+        return f'<a class="{cls}" href="{qs}">{label}</a>'
+
+    pager_parts = [page_link(page - 1, "‹ Prev", disabled=page <= 1)]
+    window = range(max(1, page - 2), min(total_pages, page + 2) + 1)
+    if window and window[0] > 1:
+        pager_parts.append(page_link(1, "1"))
+        if window[0] > 2:
+            pager_parts.append('<span class="page-gap">…</span>')
+    for p in window:
+        pager_parts.append(page_link(p, str(p), current=(p == page)))
+    if window and window[-1] < total_pages:
+        if window[-1] < total_pages - 1:
+            pager_parts.append('<span class="page-gap">…</span>')
+        pager_parts.append(page_link(total_pages, str(total_pages)))
+    pager_parts.append(page_link(page + 1, "Next ›", disabled=page >= total_pages))
+    pager_html = f'<nav class="pager">{"".join(pager_parts)}</nav>' if total > PAGE_SIZE else ""
+
     return PAGE.format(
         body=f"""
         <h1>Claude Code sessions</h1>
@@ -108,11 +133,12 @@ def index(q: str = "") -> str:
           <button type="submit">Search</button>
           {'<a class="btn" href="/">Clear</a>' if needle else ''}
         </form>
-        <p class="muted">{count_note} in {escape(str(CLAUDE_DIR))}</p>
+        <p class="muted">{range_note} in {escape(str(CLAUDE_DIR))}</p>
         <table>
           <thead><tr><th>Modified</th><th>ID</th><th>Lines</th><th>Title / project / first prompt</th><th></th></tr></thead>
           <tbody>{''.join(rows)}</tbody>
         </table>
+        {pager_html}
         """
     )
 
@@ -217,6 +243,15 @@ h1 {{ margin:0 0 8px; }}
   border-radius:6px; background:var(--panel); color:inherit; font:inherit; }}
 .search button {{ padding:8px 14px; border:1px solid var(--border);
   border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font:inherit; }}
+.pager {{ display:flex; gap:6px; justify-content:center; margin:20px 0 0;
+  flex-wrap:wrap; }}
+.page-btn {{ padding:6px 12px; border:1px solid var(--border); border-radius:6px;
+  background:var(--panel); color:var(--accent); text-decoration:none;
+  font-size:13px; min-width:36px; text-align:center; }}
+.page-btn:hover {{ border-color:var(--accent); }}
+.page-btn.current {{ background:var(--accent); color:#fff; border-color:var(--accent); }}
+.page-btn.disabled {{ color:var(--muted); background:transparent; cursor:default; }}
+.page-gap {{ padding:6px 4px; color:var(--muted); }}
 table {{ width:100%; border-collapse:collapse; background:var(--panel);
   border:1px solid var(--border); border-radius:10px; overflow:hidden; }}
 th, td {{ padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top; text-align:left; }}

@@ -1,0 +1,12 @@
+[project]
+name = "claude-code-viewer"
+version = "0.1.0"
+description = "Minimalist web viewer for Claude Code session history."
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+]
+
+[tool.uv]
+package = false
