@@ -60,9 +60,35 @@ def session_matches(item: core.SessionInfo, needle: str) -> bool:
 PAGE_SIZE = 20
 
 
+def project_key(item: core.SessionInfo) -> str:
+    return item.project_label
+
+
+def project_display(item: core.SessionInfo) -> str:
+    if item.cwd:
+        return Path(item.cwd).name or item.cwd
+    return item.project_label
+
+
+def build_project_tabs(sessions: list[core.SessionInfo]) -> list[dict]:
+    groups: dict[str, dict] = {}
+    for s in sessions:
+        key = project_key(s)
+        g = groups.setdefault(key, {"key": key, "label": project_display(s), "count": 0, "mtime": 0.0})
+        g["count"] += 1
+        if s.mtime > g["mtime"]:
+            g["mtime"] = s.mtime
+            g["label"] = project_display(s)
+    return sorted(groups.values(), key=lambda g: g["mtime"], reverse=True)
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(q: str = "", page: int = 1) -> str:
-    sessions = load_sessions()
+def index(q: str = "", project: str = "", page: int = 1) -> str:
+    all_sessions = load_sessions()
+    tabs = build_project_tabs(all_sessions)
+    sessions = all_sessions
+    if project:
+        sessions = [s for s in sessions if project_key(s) == project]
     needle = q.strip().lower()
     if needle:
         sessions = [s for s in sessions if session_matches(s, needle)]
@@ -98,12 +124,47 @@ def index(q: str = "", page: int = 1) -> str:
     noun = "match" + ("es" if total != 1 else "") if needle else "session" + ("s" if total != 1 else "")
     range_note = f"{start + 1}–{start + len(visible)} of {total} {noun}" if total else f"0 {noun}"
 
+    from urllib.parse import urlencode
+
     def page_link(p: int, label: str, disabled: bool = False, current: bool = False) -> str:
-        qs = f"?page={p}" + (f"&q={q_val}" if q else "")
+        params = {"page": p}
+        if q:
+            params["q"] = q
+        if project:
+            params["project"] = project
+        qs = "?" + urlencode(params)
         cls = "page-btn" + (" current" if current else "") + (" disabled" if disabled else "")
         if disabled:
             return f'<span class="{cls}">{label}</span>'
         return f'<a class="{cls}" href="{qs}">{label}</a>'
+
+    def tab_href(pkey: str) -> str:
+        params = {}
+        if pkey:
+            params["project"] = pkey
+        if q:
+            params["q"] = q
+        return "/" + ("?" + urlencode(params) if params else "")
+
+    sidebar_parts = [
+        f'<a class="proj{" active" if not project else ""}" href="{escape(tab_href(""))}">'
+        f'<span class="proj-label">All sessions</span>'
+        f'<span class="proj-count">{len(all_sessions)}</span></a>'
+    ]
+    for tab in tabs:
+        active = " active" if tab["key"] == project else ""
+        sidebar_parts.append(
+            f'<a class="proj{active}" href="{escape(tab_href(tab["key"]))}" '
+            f'title="{escape(tab["key"])}">'
+            f'<span class="proj-label">{escape(tab["label"])}</span>'
+            f'<span class="proj-count">{tab["count"]}</span></a>'
+        )
+    sidebar_html = (
+        f'<aside class="sidebar">'
+        f'<div class="sidebar-title">Projects</div>'
+        f'<nav class="proj-list">{"".join(sidebar_parts)}</nav>'
+        f'</aside>'
+    )
 
     pager_parts = [page_link(page - 1, "‹ Prev", disabled=page <= 1)]
     window = range(max(1, page - 2), min(total_pages, page + 2) + 1)
@@ -120,20 +181,27 @@ def index(q: str = "", page: int = 1) -> str:
     pager_parts.append(page_link(page + 1, "Next ›", disabled=page >= total_pages))
     pager_html = f'<nav class="pager">{"".join(pager_parts)}</nav>' if total > PAGE_SIZE else ""
 
+    active_label = next((t["label"] for t in tabs if t["key"] == project), "") if project else "All sessions"
     return PAGE.format(
         body=f"""
-        <h1>Claude Code sessions</h1>
-        <form method="get" action="/" class="search">
-          <input type="search" name="q" value="{q_val}" placeholder="Search title, prompt, path, or full transcript text..." autofocus>
-          <button type="submit">Search</button>
-          {'<a class="btn" href="/">Clear</a>' if needle else ''}
-        </form>
-        <p class="muted">{range_note} in {escape(str(CLAUDE_DIR))}</p>
-        <table>
-          <thead><tr><th>Modified</th><th>ID</th><th>Lines</th><th>Title / project / first prompt</th><th></th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-        {pager_html}
+        <div class="layout">
+          {sidebar_html}
+          <section class="content">
+            <h1>{escape(active_label)}</h1>
+            <form method="get" action="/" class="search">
+              {f'<input type="hidden" name="project" value="{escape(project)}">' if project else ''}
+              <input type="search" name="q" value="{q_val}" placeholder="Search title, prompt, path, or full transcript text..." autofocus>
+              <button type="submit">Search</button>
+              {f'<a class="btn" href="{escape(tab_href(project))}">Clear</a>' if needle else ''}
+            </form>
+            <p class="muted">{range_note} in {escape(str(CLAUDE_DIR))}</p>
+            <table>
+              <thead><tr><th>Modified</th><th>ID</th><th>Lines</th><th>Title / project / first prompt</th><th></th></tr></thead>
+              <tbody>{''.join(rows)}</tbody>
+            </table>
+            {pager_html}
+          </section>
+        </div>
         """
     )
 
@@ -230,10 +298,34 @@ PAGE = """<!doctype html>
   --bg:#121314; --panel:#1b1d20; --border:#33363b; --muted:#a3a7ad; --accent:#8db2ff; }} }}
 body {{ margin:0; background:var(--bg); color:inherit;
   font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-main {{ max-width:1200px; margin:0 auto; padding:28px 20px 60px; }}
+main {{ max-width:1400px; margin:0 auto; padding:24px 24px 60px; }}
 h1 {{ margin:0 0 8px; }}
 .muted {{ color:var(--muted); margin:0 0 18px; }}
+.layout {{ display:grid; grid-template-columns:260px minmax(0,1fr); gap:24px;
+  align-items:start; }}
+.sidebar {{ position:sticky; top:20px; max-height:calc(100vh - 40px);
+  overflow-y:auto; padding:14px; background:var(--panel);
+  border:1px solid var(--border); border-radius:10px; scrollbar-width:thin; }}
+.sidebar-title {{ font-size:11px; font-weight:600; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted); padding:2px 6px 10px; }}
+.proj-list {{ display:flex; flex-direction:column; }}
+.proj {{ display:flex; align-items:center; gap:8px; padding:6px 8px;
+  border-radius:6px; color:inherit; text-decoration:none; font-size:13px;
+  border-left:2px solid transparent; }}
+.proj:hover {{ background:var(--bg); }}
+.proj.active {{ background:var(--bg); border-left-color:var(--accent);
+  color:var(--accent); font-weight:600; }}
+.proj-label {{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }}
+.proj-count {{ color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }}
+.proj.active .proj-count {{ color:var(--accent); }}
+.content {{ min-width:0; }}
+.content h1 {{ margin-top:0; }}
 .search {{ display:flex; gap:8px; margin:12px 0 16px; }}
+@media (max-width: 820px) {{
+  .layout {{ grid-template-columns:1fr; }}
+  .sidebar {{ position:static; max-height:220px; }}
+}}
 .search input {{ flex:1; padding:8px 12px; border:1px solid var(--border);
   border-radius:6px; background:var(--panel); color:inherit; font:inherit; }}
 .search button {{ padding:8px 14px; border:1px solid var(--border);
